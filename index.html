@@ -256,10 +256,12 @@ body.locked main,body.locked .top{display:none}
       </div>
       <div class="card" id="rcAdvBox"><h3>Product booked / reserved</h3>
         <div class="hint" style="margin:0 0 8px">Use this when the product is not in stock and the customer pays first, so you can order it. The invoice comes when the product is delivered.</div>
-        <label>Product booked (model, colour, storage...) *</label><textarea data-r="goods" placeholder="iPhone 17 Pro Max 2TB, Cosmic Orange"></textarea>
+        <div id="rcProducts"></div>
+        <div class="actions"><button class="btn" id="addProd">+ Add another product</button></div>
+        <div class="hint">Write one product per row (model, colour, storage...). Several products share one payment. Add the value of each product if you want the total worked out for you.</div>
         <div style="margin-top:10px"><label>Remarks (optional, e.g. special order, delivery time)</label><input data-r="remarks"></div>
         <div class="row" style="margin-top:10px">
-          <div><label>Total value of the goods (Rs, optional)</label><input type="number" step="0.01" data-r="agreed"></div>
+          <div><label>Total value of the goods (Rs, optional; filled from the product values)</label><input type="number" step="0.01" data-r="agreed"></div>
           <div><label>Already paid earlier (Rs, optional)</label><input type="number" step="0.01" data-r="earlier"></div>
         </div>
       </div>
@@ -733,10 +735,12 @@ document.addEventListener("input", e => {
     refreshPreview();
   } else if(t.dataset.i !== undefined){ cur.items[+t.dataset.i][t.dataset.k] = t.value; refreshPreview(); }
   else if(t.dataset.p !== undefined){ cur.payments[+t.dataset.p][t.dataset.k] = t.value; refreshPreview(); }
+  else if(t.dataset.pr !== undefined){ rcur.products[+t.dataset.pr][t.dataset.k] = t.value; syncProducts(); fillRcFields(); refreshRc(); }
   else if(t.dataset.r){ rcur[t.dataset.r] = t.value; if(t.dataset.r === "name"){ autoCustomer(rcur, t.value, "rname"); fillRcFields(); } if(t.dataset.r === "invoiceId") onInvoicePick(); refreshRc(); }
 });
 document.addEventListener("click", e => {
   const t = e.target;
+  if(t.dataset.delprod !== undefined){ rcur.products.splice(+t.dataset.delprod, 1); if(!rcur.products.length) rcur.products.push({desc:"", qty:1, value:""}); syncProducts(); renderProducts(); fillRcFields(); refreshRc(); }
   if(t.dataset.delitem !== undefined){ cur.items.splice(+t.dataset.delitem, 1); if(!cur.items.length) cur.items.push({desc:"",hsn:"",qty:1,rate:"",disc:0,gst:18}); renderItems(); refreshPreview(); }
   if(t.dataset.delpay !== undefined){ cur.payments.splice(+t.dataset.delpay, 1); renderPays(); refreshPreview(); }
   if(t.dataset.view){ openBill(t.dataset.view); }
@@ -807,11 +811,26 @@ function openBill(id){
 let rcur = blankRc();
 function blankRc(kind="ADVANCE"){
   const d = today();
-  return {id: uid(), kind, number: nextRcNo(d), date: d, executive: DB.settings.execUtv || "", name:"", mobile:"", address:"", goods:"", remarks:"", agreed:"", earlier:"", invoiceId:"", amount:"", mode:"Cash", ref:""};
+  return {id: uid(), kind, number: nextRcNo(d), date: d, executive: DB.settings.execUtv || "", name:"", mobile:"", address:"", products:[{desc:"", qty:1, value:""}], goods:"", remarks:"", agreed:"", earlier:"", invoiceId:"", amount:"", mode:"Cash", ref:""};
+}
+/* products on an advance booking: one row each, one payment for all of them */
+function syncProducts(){
+  const ps = (rcur.products || []).filter(p => (p.desc || "").trim());
+  rcur.goods = ps.map((p, i) => (ps.length > 1 ? (i + 1) + ". " : "") + p.desc.trim() + (num(p.qty) > 1 ? "  x " + num(p.qty) : "")).join("\n");
+  const tot = r2(ps.reduce((a, p) => a + num(p.value) * (num(p.qty) || 1), 0));
+  if(tot > 0) rcur.agreed = tot;
+}
+function renderProducts(){
+  if(!rcur.products || !rcur.products.length) rcur.products = [{desc: rcur.goods || "", qty: 1, value: ""}];
+  $("#rcProducts").innerHTML = `<table class="grid"><tr><th>Product booked *</th><th style="width:60px">Qty</th><th style="width:110px">Value (Rs)</th><th></th></tr>` + rcur.products.map((p, i) => `<tr>
+    <td><textarea rows="2" data-pr="${i}" data-k="desc" placeholder="iPhone 17 Pro Max 2TB, Cosmic Orange">${esc(p.desc)}</textarea></td>
+    <td><input type="number" step="1" data-pr="${i}" data-k="qty" value="${esc(p.qty)}"></td>
+    <td><input type="number" step="0.01" data-pr="${i}" data-k="value" value="${esc(p.value)}"></td>
+    <td class="x"><button class="btn danger" data-delprod="${i}" title="Remove">×</button></td></tr>`).join("") + `</table>`;
 }
 function fillRcFields(){ $$("[data-r]").forEach(el => { if(document.activeElement !== el) el.value = rcur[el.dataset.r] ?? ""; }); }
 function fillRc(){
-  fillRcFields();
+  renderProducts(); fillRcFields();
   $("#rcAdv").classList.toggle("on", rcur.kind === "ADVANCE"); $("#rcInv").classList.toggle("on", rcur.kind === "INVOICE");
   $("#rcAdvBox").classList.toggle("hidden", rcur.kind !== "ADVANCE"); $("#rcInvBox").classList.toggle("hidden", rcur.kind !== "INVOICE");
   const bills = DB.bills;
@@ -825,6 +844,7 @@ function onInvoicePick(){
   else $("#rcInvInfo").textContent = "";
 }
 function refreshRc(){ showPreview($("#rcPreview"), receiptHTML(rcur)); }
+$("#addProd").onclick = () => { rcur.products.push({desc:"", qty:1, value:""}); renderProducts(); };
 $("#rcAdv").onclick = () => { rcur.kind = "ADVANCE"; fillRc(); };
 $("#rcInv").onclick = () => { rcur.kind = "INVOICE"; fillRc(); };
 $("#newRc").onclick = () => { rcur = blankRc(rcur.kind); fillRc(); };
@@ -834,7 +854,8 @@ function saveRc(print){
   if(num(rcur.amount) <= 0) errs.push("Amount received is needed.");
   if(!(rcur.number || "").trim()) errs.push("Receipt number is needed.");
   if(DB.receipts.some(r => r.number === rcur.number && r.id !== rcur.id)) errs.push("This receipt number is already used.");
-  if(rcur.kind === "ADVANCE" && !(rcur.goods || "").trim()) errs.push("Write which goods are booked.");
+  syncProducts();
+  if(rcur.kind === "ADVANCE" && !(rcur.goods || "").trim()) errs.push("Write which product is booked.");
   if(rcur.kind === "INVOICE" && !DB.bills.some(b => b.id === rcur.invoiceId)) errs.push("Select the invoice.");
   if(errs.length){ msg($("#rcMsg"), "err", errs.join("<br>")); return; }
   const r = JSON.parse(JSON.stringify(rcur)); r.savedAt = new Date().toISOString(); r.saved = true;
