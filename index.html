@@ -215,7 +215,7 @@ body.locked main,body.locked .top{display:none}
           <table class="grid" id="payTbl"></table>
           <div class="actions"><button class="btn" id="addPay">+ Add payment</button>
             <select id="advPick" style="width:auto;min-width:220px"></select>
-            <button class="btn" id="useAdv">Use advance receipt</button></div>
+            <button class="btn" id="useAdv">Use payment receipt</button></div>
         </div>
       </div>
 
@@ -234,7 +234,7 @@ body.locked main,body.locked .top{display:none}
 <!-- ============================ RECEIPT ============================ -->
 <section id="tab-receipt" class="hidden">
   <div class="seg">
-    <button id="rcAdv" class="on"><b>Advance booking</b><span>Customer pays in advance for goods. The tax invoice comes when the goods are delivered.</span></button>
+    <button id="rcAdv" class="on"><b>Payment for products</b><span>Customer pays for products. Some may be delivered now and some later. The tax invoice is made at the final delivery.</span></button>
     <button id="rcInv"><b>Payment against an invoice</b><span>Part or full payment for a saved bill (UTV or iVenus).</span></button>
   </div>
   <div id="rcMsg"></div>
@@ -256,12 +256,14 @@ body.locked main,body.locked .top{display:none}
       </div>
       <div class="card" id="rcAdvBox"><h3>Product booked / reserved</h3>
         <div class="hint" style="margin:0 0 8px">Use this when the product is not in stock and the customer pays first, so you can order it. The invoice comes when the product is delivered.</div>
+        <div style="margin-bottom:10px"><label>Heading printed above the products</label>
+          <select data-r="heading"><option>Payment received for</option><option>Advance booking for</option><option>Payment and delivery for</option><option value="">(no heading)</option></select></div>
         <div id="rcProducts"></div>
         <div class="actions"><button class="btn" id="addProd">+ Add another product</button></div>
-        <div class="hint">Write one product per row (model, colour, storage...). Several products share one payment. Add the value of each product if you want the total worked out for you.</div>
+        <div class="hint">Write one product per row (model, colour, storage...). Several products share one payment. Add the price of each product to print a products table with prices; the total value is then worked out for you.</div>
         <div style="margin-top:10px"><label>Remarks (optional, e.g. special order, delivery time)</label><input data-r="remarks"></div>
         <div class="row" style="margin-top:10px">
-          <div><label>Total value of the goods (Rs, optional; filled from the product values)</label><input type="number" step="0.01" data-r="agreed"></div>
+          <div><label>Total value of the goods (Rs, optional; filled from the product prices)</label><input type="number" step="0.01" data-r="agreed"></div>
           <div><label>Already paid earlier (Rs, optional)</label><input type="number" step="0.01" data-r="earlier"></div>
         </div>
       </div>
@@ -476,7 +478,7 @@ const plain = n => num(n).toFixed(2);
 /* a small quiet line at the foot of UTV bills and receipts (not on iVenus-format bills) */
 const footHTML = () => (DB.settings.footer || "").trim() ? `<div class="foot">${esc(DB.settings.footer)}</div>` : "";
 /* only a cheque shows extra details on the bill (cheque number etc.); every other mode shows just mode and amount */
-/* a payment that came from a payment receipt (advance booking or part payment) shows that receipt number */
+/* a payment that came from a payment receipt (advance payment or part payment) shows that receipt number */
 const receiptText = p => { const no = p.receipt || (/^RCPT\//.test(p.ref || "") ? String(p.ref).split(" / ")[0] : ""); return no ? "   (Receipt No. " + no + ")" : ""; };
 const chequeText = p => (p.ref ? ", Cheque No: " + p.ref : "") + (p.date ? ", Dated: " + dmy(p.date) : "");
 
@@ -544,6 +546,22 @@ function billHTML(b){
   </div><div class="eoe">E. &amp; O.E</div>${iv ? "" : footHTML()}</div>`;
 }
 
+/* the Particulars box of a payment-for-products receipt */
+function productParticulars(r){
+  const head = r.heading === undefined ? "Advance booking for" : r.heading;      // receipts saved earlier keep their old wording
+  const ps = (r.products || []).filter(p => (p.desc || "").trim());
+  const line = (p, n, many) => (many ? n + ". " : "") + p.desc.trim() + (num(p.qty) > 1 ? "  x " + num(p.qty) : "");
+  let body;
+  if(!ps.length) body = r.goods || "";
+  else {
+    const del = ps.filter(p => p.status === "delivered"), pen = ps.filter(p => p.status !== "delivered"), many = ps.length > 1;
+    let n = 0;
+    if(del.length && pen.length) body = "Delivered now:\n" + del.map(p => line(p, ++n, true)).join("\n") + "\nTo be delivered:\n" + pen.map(p => line(p, ++n, true)).join("\n");
+    else if(del.length) body = "Delivered now:\n" + del.map(p => line(p, ++n, many)).join("\n");
+    else body = pen.map(p => line(p, ++n, many)).join("\n");
+  }
+  return (head ? head + ":\n" : "") + body + (r.remarks ? "\n" + r.remarks : "");
+}
 function receiptHTML(r){
   const adv = r.kind === "ADVANCE";
   let inv = null, ci = null;
@@ -559,27 +577,50 @@ function receiptHTML(r){
     acct = MR("Total Bill Value", ": Rs. " + fmt(ci.total), false, true) + MR("Paid earlier", ": Rs. " + fmt(before), false, true) +
       MR("Paid now (this receipt)", ": Rs. " + fmt(amount), false, true) + MR("Balance Due", ": Rs. " + fmt(r2(ci.total - before - amount)), true, true);
   }
-  const particulars = adv ? `Advance booking for:\n${r.goods || ""}${r.remarks ? "\n" + r.remarks : ""}` : `Payment received against Invoice ${inv ? inv.number : ""}`;
+  const particulars = adv ? productParticulars(r) : `Payment received against Invoice ${inv ? inv.number : ""}`;
   const notes = [
     ["1.This is only a payment receipt. It is not a tax invoice and cannot be used to claim GST (input tax credit).", true],
-    [adv ? "2.A tax invoice for the original goods will be issued to you when the goods are delivered." : "2.The tax invoice for these goods is the invoice number shown above.", true],
+    [adv ? "2.The tax invoice will be issued at the time of final delivery of the goods." : "2.The tax invoice for these goods is the invoice number shown above.", true],
     ["3.Cheque payments are valid only after the amount is received in our bank account.", false],
     ["4.Subject to Surat Jurisdiction. E & O.E", false]
   ].map(([t, bd]) => `<div class="tl${bd ? " bd" : ""}">${esc(t)}</div>`).join("");
   const leftRows = `<div class="lr h" style="min-height:18.2pt">Received with thanks from</div>` + LR("Customer Name", r.name, 17.4) +
     LRh("Address", r.address, 31) + LRh("Mob. No", r.mobile, 17.4);
   const rightRows = RR("GSTIN / UID", SHOP.gstin) + RR("PAN No", SHOP.pan) + RR("Receipt Number", r.number) + RR("Receipt Date", dmy(r.date)) +
-    RR(adv ? "Receipt Type" : "Against Invoice", adv ? "Advance booking" : (inv ? inv.number : "")) + RRh("Executive", r.executive);
+    RR(adv ? "Receipt Type" : "Against Invoice", adv ? "Payment for products" : (inv ? inv.number : "")) + RRh("Executive", r.executive);
   const W = [26.2, 190, 80, 90, 80, 56.8];
+  const prods = (r.products || []).filter(p => (p.desc || "").trim());
+  const priced = adv && prods.some(p => num(p.value) > 0);
+  const head = r.heading === undefined ? "Advance booking for" : r.heading;
+  let tables;
+  if(priced){
+    const WP = [26.2, 214, 40, 70, 80, 92.8], WQ = [26.2, 150, 120, 120, 106.8];
+    const total = r2(prods.reduce((a, p) => a + num(p.value) * (num(p.qty) || 1), 0));
+    const rows = prods.map((p, i) => `<tr><td class="c">${i + 1}</td><td class="d">${esc(p.desc.trim())}</td><td class="c">${num(p.qty) || 1}</td><td class="c">${num(p.value) > 0 ? fmt(p.value) : ""}</td><td class="rt">${num(p.value) > 0 ? fmt(r2(num(p.value) * (num(p.qty) || 1))) : ""}</td><td class="c">${p.status === "delivered" ? "Delivered now" : "To be delivered"}</td></tr>`).join("");
+    tables = `${head ? `<div class="lr h" style="min-height:18pt;border-bottom:.375pt solid #000">${esc(head)}</div>` : ""}
+  <table class="it">${colgroup(WP)}
+   <tr><th>Sr.<br>No.</th><th>Description of Goods</th><th>Qty</th><th>Price</th><th>Amount</th><th>Delivery</th></tr>
+   ${rows}
+   <tr class="sub"><td colspan="4" class="lab">Total Value of Goods</td><td class="rt">${fmt(total)}</td><td></td></tr>
+  </table>
+  ${r.remarks ? `<div class="sect" style="border-top:0;padding:3pt 4pt">${esc(r.remarks)}</div>` : ""}
+  <table class="it" style="margin-top:-.375pt">${colgroup(WQ)}
+   <tr><th>Sr.<br>No.</th><th>Payment Date</th><th>Mode of Payment</th><th>Reference / Txn No</th><th>Amount Received</th></tr>
+   <tr><td class="c" style="height:28pt">1</td><td class="c">${dmy(r.date)}</td><td class="c">${esc(r.mode)}</td><td class="c">${esc(r.ref)}</td><td class="rt">${fmt(amount)}</td></tr>
+   <tr class="sub tv"><td colspan="4" class="lab">Total Amount Received (in Figure)</td><td class="lab" style="font-weight:700;padding-right:.3pt">${fmt(amount)}</td></tr>
+  </table>`;
+  } else {
+    tables = `<table class="it">${colgroup(W)}
+   <tr><th>Sr.<br>No.</th><th>Particulars</th><th>Payment Date</th><th>Mode of Payment</th><th>Reference / Txn No</th><th>Amount</th></tr>
+   <tr><td class="c" style="height:46pt">1</td><td class="d">${esc(particulars)}</td><td class="c">${dmy(r.date)}</td><td class="c">${esc(r.mode)}</td><td class="c">${esc(r.ref)}</td><td class="rt">${fmt(amount)}</td></tr>
+   <tr class="sub tv"><td colspan="5" class="lab">Total Amount Received (in Figure)</td><td class="lab" style="font-weight:700;padding-right:.3pt">${fmt(amount)}</td></tr>
+  </table>`;
+  }
   return `<div class="page">${headerHTML(false)}
   <div class="title">PAYMENT RECEIPT</div>
   <div class="cols"><div>${leftRows}</div><div>${rightRows}</div></div>
   <div class="sbox">
-  <table class="it">${colgroup(W)}
-   <tr><th>Sr.<br>No.</th><th>Particulars</th><th>Payment Date</th><th>Mode of Payment</th><th>Reference / Txn No</th><th>Amount</th></tr>
-   <tr><td class="c" style="height:46pt">1</td><td class="d">${esc(particulars)}</td><td class="c">${dmy(r.date)}</td><td class="c">${esc(r.mode)}</td><td class="c">${esc(r.ref)}</td><td class="rt">${fmt(amount)}</td></tr>
-   <tr class="sub tv"><td colspan="5" class="lab">Total Amount Received (in Figure)</td><td class="lab" style="font-weight:700;padding-right:.3pt">${fmt(amount)}</td></tr>
-  </table>
+  ${tables}
   <div class="wd" style="border-top:.375pt solid #000"><b class="wl">Total Amount In<br>Words</b><span class="wc">:</span><b class="wv">${esc(words(amount))}.</b></div>
   ${acct ? `<div class="sh">Account</div>${acct}` : ""}
   <div class="sh tc">Terms &amp; Condition</div>${notes}
@@ -630,7 +671,7 @@ function billTables(b){
 function receiptTables(r){
   const inv = DB.bills.find(b => b.id === r.invoiceId), used = DB.bills.find(b => b.id === r.adjustedTo);
   return {Receipts: {headers:["Key","Receipt No","Date","Type","Customer","Mobile","Product booked","Remarks","Against Invoice","Amount","Mode","Reference","Total value of goods","Paid earlier","Used in bill","Executive","Saved At"],
-    rows:[[r.id, r.number, dmy(r.date), r.kind === "ADVANCE" ? "Advance booking" : "Against invoice", r.name, r.mobile || "", r.goods || "", r.remarks || "", inv ? inv.number : "", num(r.amount), r.mode || "", r.ref || "", r.agreed === "" || r.agreed == null ? "" : num(r.agreed), r.earlier === "" || r.earlier == null ? "" : num(r.earlier), used ? used.number : "", r.executive || "", r.savedAt || ""]]}};
+    rows:[[r.id, r.number, dmy(r.date), r.kind === "ADVANCE" ? "Payment for products" : "Against invoice", r.name, r.mobile || "", r.goods || "", r.remarks || "", inv ? inv.number : "", num(r.amount), r.mode || "", r.ref || "", r.agreed === "" || r.agreed == null ? "" : num(r.agreed), r.earlier === "" || r.earlier == null ? "" : num(r.earlier), used ? used.number : "", r.executive || "", r.savedAt || ""]]}};
 }
 async function pushRecord(kind, rec, quiet){
   if(!sheetOn() || !rec) return;
@@ -712,7 +753,7 @@ function openAdvances(){
     (!name || (r.name || "").toLowerCase() === name));
 }
 function renderAdvPick(){
-  const opts = `<option value="">Advance receipts for this customer...</option>` +
+  const opts = `<option value="">Payment receipts for this customer...</option>` +
     openAdvances().map(r => `<option value="${r.id}">${esc(r.number)} - Rs. ${fmt(r.amount)} (${esc(r.goods.split("\n")[0].slice(0,30))})</option>`).join("");
   $("#advPick").innerHTML = opts;
 }
@@ -740,7 +781,7 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("click", e => {
   const t = e.target;
-  if(t.dataset.delprod !== undefined){ rcur.products.splice(+t.dataset.delprod, 1); if(!rcur.products.length) rcur.products.push({desc:"", qty:1, value:""}); syncProducts(); renderProducts(); fillRcFields(); refreshRc(); }
+  if(t.dataset.delprod !== undefined){ rcur.products.splice(+t.dataset.delprod, 1); if(!rcur.products.length) rcur.products.push({desc:"", qty:1, value:"", status:"pending"}); syncProducts(); renderProducts(); fillRcFields(); refreshRc(); }
   if(t.dataset.delitem !== undefined){ cur.items.splice(+t.dataset.delitem, 1); if(!cur.items.length) cur.items.push({desc:"",hsn:"",qty:1,rate:"",disc:0,gst:18}); renderItems(); refreshPreview(); }
   if(t.dataset.delpay !== undefined){ cur.payments.splice(+t.dataset.delpay, 1); renderPays(); refreshPreview(); }
   if(t.dataset.view){ openBill(t.dataset.view); }
@@ -811,21 +852,22 @@ function openBill(id){
 let rcur = blankRc();
 function blankRc(kind="ADVANCE"){
   const d = today();
-  return {id: uid(), kind, number: nextRcNo(d), date: d, executive: DB.settings.execUtv || "", name:"", mobile:"", address:"", products:[{desc:"", qty:1, value:""}], goods:"", remarks:"", agreed:"", earlier:"", invoiceId:"", amount:"", mode:"Cash", ref:""};
+  return {id: uid(), kind, number: nextRcNo(d), date: d, executive: DB.settings.execUtv || "", name:"", mobile:"", address:"", heading:"Payment received for", products:[{desc:"", qty:1, value:"", status:"pending"}], goods:"", remarks:"", agreed:"", earlier:"", invoiceId:"", amount:"", mode:"Cash", ref:""};
 }
-/* products on an advance booking: one row each, one payment for all of them */
+/* products on a payment receipt: one row each, one payment for all of them */
 function syncProducts(){
   const ps = (rcur.products || []).filter(p => (p.desc || "").trim());
-  rcur.goods = ps.map((p, i) => (ps.length > 1 ? (i + 1) + ". " : "") + p.desc.trim() + (num(p.qty) > 1 ? "  x " + num(p.qty) : "")).join("\n");
+  rcur.goods = ps.map((p, i) => (ps.length > 1 ? (i + 1) + ". " : "") + p.desc.trim() + (num(p.qty) > 1 ? "  x " + num(p.qty) : "") + (p.status === "delivered" ? "  (delivered)" : "")).join("\n");
   const tot = r2(ps.reduce((a, p) => a + num(p.value) * (num(p.qty) || 1), 0));
   if(tot > 0) rcur.agreed = tot;
 }
 function renderProducts(){
   if(!rcur.products || !rcur.products.length) rcur.products = [{desc: rcur.goods || "", qty: 1, value: ""}];
-  $("#rcProducts").innerHTML = `<table class="grid"><tr><th>Product booked *</th><th style="width:60px">Qty</th><th style="width:110px">Value (Rs)</th><th></th></tr>` + rcur.products.map((p, i) => `<tr>
+  $("#rcProducts").innerHTML = `<table class="grid"><tr><th>Product booked *</th><th style="width:60px">Qty</th><th style="width:110px">Price each (Rs)</th><th style="width:150px">Delivery</th><th></th></tr>` + rcur.products.map((p, i) => `<tr>
     <td><textarea rows="2" data-pr="${i}" data-k="desc" placeholder="iPhone 17 Pro Max 2TB, Cosmic Orange">${esc(p.desc)}</textarea></td>
     <td><input type="number" step="1" data-pr="${i}" data-k="qty" value="${esc(p.qty)}"></td>
     <td><input type="number" step="0.01" data-pr="${i}" data-k="value" value="${esc(p.value)}"></td>
+    <td><select data-pr="${i}" data-k="status"><option value="pending" ${p.status !== "delivered" ? "selected" : ""}>To be delivered</option><option value="delivered" ${p.status === "delivered" ? "selected" : ""}>Delivered now</option></select></td>
     <td class="x"><button class="btn danger" data-delprod="${i}" title="Remove">×</button></td></tr>`).join("") + `</table>`;
 }
 function fillRcFields(){ $$("[data-r]").forEach(el => { if(document.activeElement !== el) el.value = rcur[el.dataset.r] ?? ""; }); }
@@ -844,7 +886,7 @@ function onInvoicePick(){
   else $("#rcInvInfo").textContent = "";
 }
 function refreshRc(){ showPreview($("#rcPreview"), receiptHTML(rcur)); }
-$("#addProd").onclick = () => { rcur.products.push({desc:"", qty:1, value:""}); renderProducts(); };
+$("#addProd").onclick = () => { rcur.products.push({desc:"", qty:1, value:"", status:"pending"}); renderProducts(); };
 $("#rcAdv").onclick = () => { rcur.kind = "ADVANCE"; fillRc(); };
 $("#rcInv").onclick = () => { rcur.kind = "INVOICE"; fillRc(); };
 $("#newRc").onclick = () => { rcur = blankRc(rcur.kind); fillRc(); };
@@ -888,8 +930,8 @@ function renderSaved(){
   const rcs = DB.receipts.filter(r => hit(r.number, r.name, r.mobile)).sort((a, b) => (b.date + b.savedAt).localeCompare(a.date + a.savedAt));
   $("#rcList").innerHTML = `<tr><th>Receipt no</th><th>Date</th><th>Customer</th><th>For</th><th class="num">Amount</th><th>Status</th><th></th></tr>` +
     (rcs.map(r => { const inv = DB.bills.find(b => b.id === r.invoiceId);
-      return `<tr><td>${esc(r.number)}</td><td>${dmy(r.date)}</td><td>${esc(r.name)}</td><td>${r.kind === "ADVANCE" ? "Advance: " + esc((r.goods || "").split("\n")[0].slice(0, 40)) : "Invoice " + esc(inv ? inv.number : "")}</td>
-      <td class="num">${fmt(r.amount)}</td><td>${r.kind === "ADVANCE" ? (r.adjustedTo ? `<span class="pill paid">Used in bill</span>` : `<span class="pill part">Open advance</span>`) : ""}</td>
+      return `<tr><td>${esc(r.number)}</td><td>${dmy(r.date)}</td><td>${esc(r.name)}</td><td>${r.kind === "ADVANCE" ? "Products: " + esc((r.goods || "").split("\n")[0].slice(0, 40)) : "Invoice " + esc(inv ? inv.number : "")}</td>
+      <td class="num">${fmt(r.amount)}</td><td>${r.kind === "ADVANCE" ? (r.adjustedTo ? `<span class="pill paid">Used in bill</span>` : `<span class="pill part">No invoice yet</span>`) : ""}</td>
       <td><button class="btn" data-prc="${r.id}">Print</button> <button class="btn danger" data-delrc="${r.id}">Delete</button></td></tr>`; }).join("") || `<tr><td colspan="7" class="hint">No receipts saved yet.</td></tr>`);
   $("#logoPrev").src = DB.settings.dealerLogo || DEALER_BADGE; $("#setPrefix").value = DB.settings.prefix; $("#setRPrefix").value = DB.settings.rprefix; $("#setSheetUrl").value = DB.settings.sheetUrl || ""; $("#setSheetSecret").value = DB.settings.sheetSecret || ""; $("#setFooter").value = DB.settings.footer || ""; $("#setExecUtv").value = DB.settings.execUtv; $("#setExecIv").value = DB.settings.execIv;
 }
@@ -992,7 +1034,7 @@ function buildXlsx(){
   const rcRows = [["Receipt No","Date","Type","Customer","Mobile","Goods booked","Against Invoice","Amount","Mode","Reference","Total value of goods","Paid earlier","Used in bill","Executive","Saved At"]];
   DB.receipts.slice().sort((a, b) => a.date.localeCompare(b.date)).forEach(r => {
     const inv = DB.bills.find(b => b.id === r.invoiceId), used = DB.bills.find(b => b.id === r.adjustedTo);
-    rcRows.push([r.number,D(r.date),r.kind === "ADVANCE" ? "Advance booking" : "Against invoice",r.name,r.mobile,r.goods,inv ? inv.number : "",num(r.amount),r.mode,r.ref,r.agreed === "" ? "" : num(r.agreed),r.earlier === "" ? "" : num(r.earlier),used ? used.number : "",r.executive,r.savedAt]);
+    rcRows.push([r.number,D(r.date),r.kind === "ADVANCE" ? "Payment for products" : "Against invoice",r.name,r.mobile,r.goods,inv ? inv.number : "",num(r.amount),r.mode,r.ref,r.agreed === "" ? "" : num(r.agreed),r.earlier === "" ? "" : num(r.earlier),used ? used.number : "",r.executive,r.savedAt]);
   });
   const sheets = [["Bills",billRows,[10,22,12,24,14,18,16,50,14,12,12,12,14,14,14,12,16,24]],["Items",itemRows,[22,6,50,12,6,12,10,8,14,14]],["Payments",payRows,[22,12,14,26,14]],["Receipts",rcRows,[22,12,16,24,14,40,22,14,14,22,16,14,22,16,24]]];
   const ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
