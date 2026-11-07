@@ -354,6 +354,7 @@ const IV = {
     "8.Once an invoice is generated, it cannot be modified. Clerical errors will be corrected, but changes such as updating the invoice from an individual name to a GST-registered entity or switching from one GST number to another will not be allowed."],
   account: [["Name of Account", "VENUS DATA PRODUCTS PVT. LTD."], ["Bank Name", "HDFC BANK LTD"], ["Account No.", "99932734447002"], ["IFSC Code", "HDFC0000251"]]
 };
+const FIRST_RECEIPT_FY2627 = 942;    // next running number for payment receipts this year: RCPT/2627/0942
 const FIRST_SERIAL_FY2627 = 1390;   // next running number for UTV bills this year; numbers look like iVenus: GJ/2627/1390
 
 /* ===================== PIN lock (a light lock to keep casual visitors out) ===================== */
@@ -430,16 +431,16 @@ function fyCode(iso){
   const s = m >= 4 ? y : y - 1;
   return String(s).slice(2) + String(s+1).slice(2);
 }
-function nextNumber(prefix, iso, list, getNo){
+function nextNumber(prefix, iso, list, getNo, first){
   const fy = fyCode(iso), head = `${prefix}/${fy}/`;
   let max = 0;
   list.forEach(x => { const n = getNo(x) || ""; if(n.startsWith(head)){ const k = parseInt(n.slice(head.length), 10); if(k > max) max = k; } });
   let next = max + 1;
-  if(!max && fy === "2627" && prefix === DB.settings.prefix) next = FIRST_SERIAL_FY2627;
+  if(!max && fy === "2627" && first) next = first;
   return head + String(next).padStart(4, "0");
 }
-const nextBillNo = iso => nextNumber(DB.settings.prefix, iso, DB.bills.filter(b => b.type==="UTV"), b => b.number);
-const nextRcNo = iso => nextNumber(DB.settings.rprefix, iso, DB.receipts, r => r.number);
+const nextBillNo = iso => nextNumber(DB.settings.prefix, iso, DB.bills.filter(b => b.type==="UTV"), b => b.number, FIRST_SERIAL_FY2627);
+const nextRcNo = iso => nextNumber(DB.settings.rprefix, iso, DB.receipts, r => r.number, FIRST_RECEIPT_FY2627);
 
 /* ===================== bill maths (same as the Excel sheet) ===================== */
 function calcBill(b){
@@ -786,6 +787,7 @@ document.addEventListener("click", e => {
   if(t.dataset.delpay !== undefined){ cur.payments.splice(+t.dataset.delpay, 1); renderPays(); refreshPreview(); }
   if(t.dataset.view){ openBill(t.dataset.view); }
   if(t.dataset.delbill){ if(confirm("Delete this bill? This cannot be undone.")){ DB.bills = DB.bills.filter(b => b.id !== t.dataset.delbill); persist(); renderSaved(); pushDelete(t.dataset.delbill); } }
+  if(t.dataset.erc){ openReceipt(t.dataset.erc); }
   if(t.dataset.prc){ const r = DB.receipts.find(x => x.id === t.dataset.prc); r.saved = true; doPrint(receiptHTML(r)); }
   if(t.dataset.delrc){ if(confirm("Delete this receipt? Payments already added to a bill stay on the bill.")){ DB.receipts = DB.receipts.filter(x => x.id !== t.dataset.delrc); persist(); renderSaved(); pushDelete(t.dataset.delrc); } }
 });
@@ -850,6 +852,7 @@ function openBill(id){
 
 /* ===================== RECEIPT tab ===================== */
 let rcur = blankRc();
+let rcEditing = false;
 function blankRc(kind="ADVANCE"){
   const d = today();
   return {id: uid(), kind, number: nextRcNo(d), date: d, executive: DB.settings.execUtv || "", name:"", mobile:"", address:"", heading:"Payment received for", products:[{desc:"", qty:1, value:"", status:"pending"}], goods:"", remarks:"", agreed:"", earlier:"", invoiceId:"", amount:"", mode:"Cash", ref:""};
@@ -872,7 +875,7 @@ function renderProducts(){
 }
 function fillRcFields(){ $$("[data-r]").forEach(el => { if(document.activeElement !== el) el.value = rcur[el.dataset.r] ?? ""; }); }
 function fillRc(){
-  renderProducts(); fillRcFields();
+  renderProducts(); fillRcFields(); $("#saveRc").textContent = rcEditing ? "Update receipt" : "Save receipt";
   $("#rcAdv").classList.toggle("on", rcur.kind === "ADVANCE"); $("#rcInv").classList.toggle("on", rcur.kind === "INVOICE");
   $("#rcAdvBox").classList.toggle("hidden", rcur.kind !== "ADVANCE"); $("#rcInvBox").classList.toggle("hidden", rcur.kind !== "INVOICE");
   const bills = DB.bills;
@@ -889,7 +892,13 @@ function refreshRc(){ showPreview($("#rcPreview"), receiptHTML(rcur)); }
 $("#addProd").onclick = () => { rcur.products.push({desc:"", qty:1, value:"", status:"pending"}); renderProducts(); };
 $("#rcAdv").onclick = () => { rcur.kind = "ADVANCE"; fillRc(); };
 $("#rcInv").onclick = () => { rcur.kind = "INVOICE"; fillRc(); };
-$("#newRc").onclick = () => { rcur = blankRc(rcur.kind); fillRc(); };
+$("#newRc").onclick = () => { rcur = blankRc(rcur.kind); rcEditing = false; fillRc(); };
+function openReceipt(id){
+  const r = DB.receipts.find(x => x.id === id); if(!r) return;
+  rcur = JSON.parse(JSON.stringify(r)); rcEditing = true; switchTab("receipt");
+}
+/* editing a receipt keeps the payment on its bill in step with the receipt */
+const fromReceipt = (p, no) => p.receipt === no || String(p.ref || "").split(" / ")[0] === no;
 function saveRc(print){
   const errs = [];
   if(!(rcur.name || "").trim()) errs.push("Customer name is needed.");
@@ -901,17 +910,21 @@ function saveRc(print){
   if(rcur.kind === "INVOICE" && !DB.bills.some(b => b.id === rcur.invoiceId)) errs.push("Select the invoice.");
   if(errs.length){ msg($("#rcMsg"), "err", errs.join("<br>")); return; }
   const r = JSON.parse(JSON.stringify(rcur)); r.savedAt = new Date().toISOString(); r.saved = true;
-  const exists = DB.receipts.some(x => x.id === r.id);
-  if(rcur.kind === "INVOICE" && !exists){   // add the payment to the invoice once
+  const old = DB.receipts.find(x => x.id === r.id), exists = !!old, now = new Date().toISOString(), touched = new Set();
+  if(old) DB.bills.forEach(b => { const n = (b.payments || []).length; b.payments = (b.payments || []).filter(pm => !fromReceipt(pm, old.number)); if(b.payments.length !== n){ b.savedAt = now; touched.add(b.id); } });
+  if(rcur.kind === "INVOICE"){   // the payment sits on the chosen invoice
     const b = DB.bills.find(x => x.id === r.invoiceId);
-    b.savedAt = new Date().toISOString(); b.payments = b.payments || []; b.payments.push({date: r.date, mode: r.mode, ref: r.number + (r.ref ? " / " + r.ref : ""), receipt: r.number, amount: r.amount});
+    b.savedAt = now; b.payments = b.payments || []; b.payments.push({date: r.date, mode: r.mode, ref: r.number + (r.ref ? " / " + r.ref : ""), receipt: r.number, amount: r.amount}); touched.add(b.id);
+  } else if(old && old.adjustedTo){   // an advance receipt that was already used in a bill
+    const b = DB.bills.find(x => x.id === old.adjustedTo);
+    if(b){ b.savedAt = now; b.payments = b.payments || []; b.payments.push({date: r.date, mode: r.mode, ref: r.number, receipt: r.number, amount: r.amount}); touched.add(b.id); }
   }
   if(exists) DB.receipts[DB.receipts.findIndex(x => x.id === r.id)] = r; else DB.receipts.push(r);
   persist(); refreshCustList();
-  pushReceipt(DB.receipts.find(x => x.id === r.id)); if(r.kind === "INVOICE") pushBill(DB.bills.find(b => b.id === r.invoiceId));
+  pushReceipt(DB.receipts.find(x => x.id === r.id)); touched.forEach(id => pushBill(DB.bills.find(b => b.id === id)));
   msg($("#rcMsg"), "ok", `Saved receipt ${esc(r.number)}.`);
   if(print) doPrint(receiptHTML(r));
-  rcur = JSON.parse(JSON.stringify(r)); fillRc();
+  rcur = JSON.parse(JSON.stringify(r)); rcEditing = true; fillRc();
 }
 $("#saveRc").onclick = () => saveRc(false);
 $("#printRc").onclick = () => saveRc(true);
@@ -932,7 +945,7 @@ function renderSaved(){
     (rcs.map(r => { const inv = DB.bills.find(b => b.id === r.invoiceId);
       return `<tr><td>${esc(r.number)}</td><td>${dmy(r.date)}</td><td>${esc(r.name)}</td><td>${r.kind === "ADVANCE" ? "Products: " + esc((r.goods || "").split("\n")[0].slice(0, 40)) : "Invoice " + esc(inv ? inv.number : "")}</td>
       <td class="num">${fmt(r.amount)}</td><td>${r.kind === "ADVANCE" ? (r.adjustedTo ? `<span class="pill paid">Used in bill</span>` : `<span class="pill part">No invoice yet</span>`) : ""}</td>
-      <td><button class="btn" data-prc="${r.id}">Print</button> <button class="btn danger" data-delrc="${r.id}">Delete</button></td></tr>`; }).join("") || `<tr><td colspan="7" class="hint">No receipts saved yet.</td></tr>`);
+      <td><button class="btn" data-erc="${r.id}">Open / edit</button> <button class="btn" data-prc="${r.id}">Print</button> <button class="btn danger" data-delrc="${r.id}">Delete</button></td></tr>`; }).join("") || `<tr><td colspan="7" class="hint">No receipts saved yet.</td></tr>`);
   $("#logoPrev").src = DB.settings.dealerLogo || DEALER_BADGE; $("#setPrefix").value = DB.settings.prefix; $("#setRPrefix").value = DB.settings.rprefix; $("#setSheetUrl").value = DB.settings.sheetUrl || ""; $("#setSheetSecret").value = DB.settings.sheetSecret || ""; $("#setFooter").value = DB.settings.footer || ""; $("#setExecUtv").value = DB.settings.execUtv; $("#setExecIv").value = DB.settings.execIv;
 }
 $("#q").oninput = renderSaved;
